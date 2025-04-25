@@ -2,11 +2,13 @@ package com.uci.adapter.app.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.uci.utils.BotService;
-import com.uci.utils.dto.BotServiceParams;
+import com.uci.utils.CampaignService;
 import io.fusionauth.client.FusionAuthClient;
 
-import okhttp3.OkHttpClient;
+import java.time.Duration;
+
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.Credentials;
 import org.apache.http.auth.UsernamePasswordCredentials;
@@ -19,6 +21,8 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.cache.CacheManager;
+import org.springframework.cache.caffeine.CaffeineCacheManager;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
@@ -28,27 +32,28 @@ import org.springframework.web.reactive.function.client.WebClient;
 
 @Configuration
 @EnableAutoConfiguration
-public class AppConfiguration1 {
+public class AppConfiguration {
 
     @Value("${campaign.url}")
-    public String CAMPAIGN_URL;
+    private String campaignUrl;
 
     @Value("${fusionauth.url}")
-    public String FUSIONAUTH_URL;
+    private String fusionAuthUrl;
 
     @Value("${fusionauth.key}")
-    public String FUSIONAUTH_KEY;
-
+    private String fusionAuthKey;
 
     @Autowired
-    public Cache<Object, Object> cache;
+    private Cache<Object, Object> cache;
 
+    // Default RestTemplate
     @Bean
     @Qualifier("rest")
     public RestTemplate getRestTemplate() {
         return new RestTemplate();
     }
 
+    // RestTemplate with Basic Auth
     @Bean
     @Qualifier("custom")
     public RestTemplate getCustomTemplate(RestTemplateBuilder builder) {
@@ -56,8 +61,7 @@ public class AppConfiguration1 {
         CredentialsProvider credentialsProvider = new BasicCredentialsProvider();
         credentialsProvider.setCredentials(AuthScope.ANY, credentials);
 
-        HttpClient httpClient = HttpClients
-                .custom()
+        HttpClient httpClient = HttpClients.custom()
                 .setDefaultCredentialsProvider(credentialsProvider)
                 .disableAuthCaching()
                 .build();
@@ -67,6 +71,7 @@ public class AppConfiguration1 {
                 .build();
     }
 
+    // JSON-enabled RestTemplate
     @Bean
     @Qualifier("json")
     public RestTemplate getJSONRestTemplate() {
@@ -75,28 +80,28 @@ public class AppConfiguration1 {
                 .build();
     }
 
-    @Bean
-    public BotServiceParams getBotServiceParams() {
-        return new BotServiceParams();
-    }
-
+    // FusionAuth client
     @Bean
     public FusionAuthClient getFAClient() {
-        return new FusionAuthClient(FUSIONAUTH_KEY, FUSIONAUTH_URL);
+        return new FusionAuthClient(fusionAuthKey, fusionAuthUrl);
     }
 
+    // BotService using WebClient and FusionAuth
     @Bean
     public BotService getBotService() {
         WebClient webClient = WebClient.builder()
-                .baseUrl(CAMPAIGN_URL)
+                .baseUrl(campaignUrl)
                 .build();
 
-        return new BotService(webClient, getFAClient(), cache, getBotServiceParams());
+        return new BotService(webClient, getFAClient(), cache);
     }
 
+    // Optional: Provide default in-memory Caffeine cache if not injected externally
     @Bean
-    public OkHttpClient getOkHttpClient() {
-        return new OkHttpClient().newBuilder().build();
+    public Cache<Object, Object> caffeineCache() {
+        return Caffeine.newBuilder()
+                .expireAfterWrite(Duration.ofMinutes(30))
+                .maximumSize(1000)
+                .build();
     }
-
 }

@@ -15,15 +15,12 @@ import messagerosa.core.model.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.web.client.RestTemplate;
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import javax.xml.bind.JAXBException;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
 import java.util.function.Function;
 
 @Slf4j
@@ -35,201 +32,124 @@ public class SunbirdWebPortalAdapter extends AbstractProvider implements IProvid
     @Autowired
     @Qualifier("rest")
     private RestTemplate restTemplate;
-    
-    private String assesOneLevelUpChar;
-    private String assesGoToStartChar;
-    
-//    private final static String outboundUrl = "http://transport-socket-4.ngrok.samagra.io";
-
 
     @Override
     public Mono<XMessage> convertMessageToXMsg(Object message) throws JAXBException, JsonProcessingException {
         SunbirdWebMessage webMessage = (SunbirdWebMessage) message;
-        SenderReceiverInfo from = SenderReceiverInfo.builder().build();
-        SenderReceiverInfo to = SenderReceiverInfo.builder().userID("admin").build();
-        XMessage.MessageState messageState = XMessage.MessageState.REPLIED;
-        MessageId messageIdentifier = MessageId.builder().build();
 
-        XMessagePayload xmsgPayload = XMessagePayload.builder().build();
-        log.info("XMessage Payload getting created >>>");
-        xmsgPayload.setText(webMessage.getText());
-        XMessage.MessageType messageType= XMessage.MessageType.TEXT;
-        //Todo: How to get Button choices from normal text
-        from.setUserID(webMessage.getFrom());
-        
-        /* To use later in outbound reply message's message id & to */
-        messageIdentifier.setChannelMessageId(webMessage.getMessageId());
-        messageIdentifier.setReplyId(webMessage.getTo());
-        
-        XMessage x = XMessage.builder()
-                .to(to)
-                .from(from)
+        XMessagePayload xmsgPayload = XMessagePayload.builder()
+                .text(webMessage.getText())
+                .build();
+
+        XMessage xMessage = XMessage.builder()
+                .from(SenderReceiverInfo.builder().userID(webMessage.getFrom()).build())
+                .to(SenderReceiverInfo.builder().userID("admin").build())
+                .messageId(MessageId.builder()
+                        .channelMessageId(webMessage.getMessageId())
+                        .replyId(webMessage.getTo())
+                        .build())
+                .messageState(XMessage.MessageState.REPLIED)
+                .messageType(XMessage.MessageType.TEXT)
                 .channelURI("web")
                 .providerURI("sunbird")
-                .messageState(messageState)
-                .messageId(messageIdentifier)
-                .messageType(messageType)
                 .timestamp(Timestamp.valueOf(LocalDateTime.now()).getTime())
-                .payload(xmsgPayload).build();
-        log.info("Current message :: " +  x.toString());
-        return Mono.just(x);
+                .payload(xmsgPayload)
+                .build();
+
+        log.info("Converted inbound message to XMessage: {}", xMessage);
+        return Mono.just(xMessage);
     }
 
     @Override
     public Mono<XMessage> processOutBoundMessageF(XMessage xMsg) throws Exception {
-        log.info("Sending message to transport socket :: " + xMsg.toXML());
-        OutboundMessage outboundMessage = getOutboundMessage(xMsg);
-        log.info("Sending final xmessage to transport socket :: " + xMsg.toXML());
-        // String url = PropertiesCache.getInstance().getProperty("SUNBIRD_OUTBOUND");
-        String url = System.getenv("TRANSPORT_SOCKET_BASE_URL")+"/botMsg/adapterOutbound";
-        return SunbirdWebService.getInstance().
-                sendOutboundMessage(url, outboundMessage)
-                .map(new Function<SunbirdWebResponse, XMessage>() {
-            @Override
-            public XMessage apply(SunbirdWebResponse sunbirdWebResponse) {
-                if(sunbirdWebResponse != null){
-                    xMsg.setMessageId(MessageId.builder().channelMessageId(sunbirdWebResponse.getId()).build());
-                    xMsg.setMessageState(XMessage.MessageState.SENT);
-                }
-                return xMsg;
-            }
-        });
-    }
+        log.info("Sending message to transport socket: {}", xMsg.toXML());
 
+        OutboundMessage outboundMessage = getOutboundMessage(xMsg);
+        String url = "http://transport-socket.ngrok.samagra.io/botMsg/adapterOutbound";
+
+        return SunbirdWebService.getInstance()
+                .sendOutboundMessage(url, outboundMessage)
+                .map(response -> {
+                    if (response != null) {
+                        xMsg.setMessageId(MessageId.builder().channelMessageId(response.getId()).build());
+                        xMsg.setMessageState(XMessage.MessageState.SENT);
+                    }
+                    return xMsg;
+                });
+    }
 
     @Override
     public void processOutBoundMessage(XMessage nextMsg) throws Exception {
-        log.info("next question to user is {}", nextMsg.toXML());
+        log.info("Processing outbound message: {}", nextMsg.toXML());
         callOutBoundAPI(nextMsg);
     }
 
-    public XMessage callOutBoundAPI(XMessage xMsg) throws Exception{
+    public XMessage callOutBoundAPI(XMessage xMsg) throws Exception {
         OutboundMessage outboundMessage = getOutboundMessage(xMsg);
-        //Get the Sunbird Outbound Url for message push
-        // String url = PropertiesCache.getInstance().getProperty("SUNBIRD_OUTBOUND");
-        String url = System.getenv("TRANSPORT_SOCKET_BASE_URL")+"/adapterOutbound";
+        String url = "http://transport-socket.ngrok.samagra.io/adapterOutbound";
+
         SunbirdWebService webService = new SunbirdWebService();
         SunbirdWebResponse response = webService.sendText(url, outboundMessage);
-        if(null != response){
+
+        if (response != null) {
             xMsg.setMessageId(MessageId.builder().channelMessageId(response.getId()).build());
         }
         xMsg.setMessageState(XMessage.MessageState.SENT);
         return xMsg;
     }
 
-//    @NotNull
-//    private SunbirdCredentials getCredentials() {
-//        String token = PropertiesCache.getInstance().getProperty("SUNBIRD_TOKEN");
-//        SunbirdCredentials sc = SunbirdCredentials.builder().build();
-//        sc.setToken(token);
-//        return sc;
-//    }
-
     private OutboundMessage getOutboundMessage(XMessage xMsg) throws JAXBException {
         SunbirdMessage sunbirdMessage = SunbirdMessage.builder()
-        									.title(getTextMessage(xMsg))
-        									.choices(this.getButtonChoices(xMsg))
-        									.build();
+                .title(getCleanTextMessage(xMsg))
+                .choices(getButtonChoices(xMsg))
+                .build();
+
         return OutboundMessage.builder()
-        		.message(sunbirdMessage)
-				.to(xMsg.getMessageId().getReplyId())
-				.messageId(xMsg.getMessageId().getChannelMessageId())
-				.build();
+                .message(sunbirdMessage)
+                .to(xMsg.getMessageId().getReplyId())
+                .messageId(xMsg.getMessageId().getChannelMessageId())
+                .build();
     }
-    
+
     /**
-     * Get Simplified Text Message
-     * @param xMsg
-     * @return String
+     * Clean special characters and formatting from text message.
      */
-    private String getTextMessage(XMessage xMsg) {
-    	XMessagePayload payload = xMsg.getPayload();
-    	String text = payload.getText().replace("__", "");
-    	text = text.replace("\n\n", "");
-    	text = text.replaceAll("\n", "<br>");
-    	text = text.replaceAll("\\\\n", "<br>");
-    	payload.setText(text);
-    	return text;
+    private String getCleanTextMessage(XMessage xMsg) {
+        XMessagePayload payload = xMsg.getPayload();
+        String cleanedText = payload.getText().replace("__", "").replace("\n\n", "");
+        payload.setText(cleanedText);
+        return cleanedText;
     }
-    
+
     /**
-     * Get Button Choices with calculated keys
-     * @param xMsg
-     * @return ArrayList of ButtonChoices
+     * Parse button choices and auto-generate keys from their text.
      */
     private ArrayList<ButtonChoice> getButtonChoices(XMessage xMsg) {
-    	String goBackText = "Go Back";
-        String goToMainMenuText = "Main Menu";
-        
-    	ArrayList<ButtonChoice> choices = xMsg.getPayload().getButtonChoices();
-    	setAssesmentCharacters();
-    	if(choices == null) 
-    		choices = new ArrayList();
-    	
-    	if(xMsg.getConversationLevel() != null) {
-    		/* Go Back Button */
-    		if (xMsg.getConversationLevel().get(0) != null && xMsg.getConversationLevel().get(0) > 0) {
-    			ButtonChoice c1 = new ButtonChoice();
-    			c1.setKey(this.assesOneLevelUpChar);
-    			c1.setText(this.assesOneLevelUpChar + " " + goBackText);
-    			c1.setBackmenu(true);
-    			choices.add(c1);
-    		}
-
-    		/* Go To Main Menu Button*/
-    		if (xMsg.getConversationLevel().get(0) != null && xMsg.getConversationLevel().get(0) > 0
-    				&& xMsg.getConversationLevel().get(1) != null && xMsg.getConversationLevel().get(1) > 0) {
-    			ButtonChoice c2 = new ButtonChoice();
-    			c2.setKey(this.assesGoToStartChar);
-    			c2.setText(this.assesGoToStartChar + " " + goToMainMenuText);
-    			c2.setBackmenu(true);
-    			choices.add(c2);
-    		}
-    	}
-        
-    	choices.forEach(c -> {
-    		String[] a = c.getText().split(" ");
-    		if(a[0] != null && !a[0].isEmpty()) {
-    			String key = a[0].toString();
-    			a = Arrays.copyOfRange(a, 1, a.length);
-    			String text = String.join(" ", a);
-    			
-    			log.info("text: "+text);
-    			c.setKey(key);
-    			c.setText(text.trim());
-    			if(c.getBackmenu() == null || c.getBackmenu() != true) {
-    				c.setBackmenu(false);
-    			}
-    		}
-    	});
-    	xMsg.getPayload().setButtonChoices(choices);
-    	
-    	return choices;
+        ArrayList<ButtonChoice> choices = xMsg.getPayload().getButtonChoices();
+        if (choices != null) {
+            choices.forEach(choice -> {
+                String[] words = choice.getText().split(" ");
+                if (words.length > 0 && !words[0].isEmpty()) {
+                    String key = words[0];
+                    choice.setKey(key);
+                    choice.setText(choice.getText().replaceFirst(key, "").trim());
+                }
+            });
+        }
+        return choices;
     }
 
+    /**
+     * Render choices as plain string for fallback or logging.
+     */
     private String renderMessageChoices(ArrayList<ButtonChoice> buttonChoices) {
-        StringBuilder processedChoicesBuilder = new StringBuilder("");
-        if(buttonChoices != null){
-            for(ButtonChoice choice:buttonChoices){
-                processedChoicesBuilder.append(choice.getText()).append("\n");
+        if (buttonChoices != null && !buttonChoices.isEmpty()) {
+            StringBuilder builder = new StringBuilder();
+            for (ButtonChoice choice : buttonChoices) {
+                builder.append(choice.getText()).append("\n");
             }
-            String processedChoices = processedChoicesBuilder.toString();
-            return processedChoices.substring(0,processedChoices.length()-1);
+            return builder.substring(0, builder.length() - 1); // Remove last newline
         }
         return "";
-    }
-
-    /* Set Assesment Characters in variables */
-    public void setAssesmentCharacters() {
-    	String envAssesOneLevelUpChar = System.getenv("ASSESSMENT_ONE_LEVEL_UP_CHAR");
-        String envAssesGoToStartChar = System.getenv("ASSESSMENT_GO_TO_START_CHAR");
-        
-        this.assesOneLevelUpChar = envAssesOneLevelUpChar == "0" || (envAssesOneLevelUpChar != null && !envAssesOneLevelUpChar.isEmpty()) ? envAssesOneLevelUpChar : "#";
-        this.assesGoToStartChar = envAssesGoToStartChar == "0" || (envAssesGoToStartChar != null && !envAssesGoToStartChar.isEmpty()) ? envAssesGoToStartChar : "*";
-    }
-
-    @Override
-    public Flux<XMessage> processOutBoundMessageF(Mono<List<XMessage>> xMessageList) throws Exception {
-        return null;
     }
 }
